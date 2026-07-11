@@ -165,7 +165,7 @@ root.SetAction(async (parseResult, cancellationToken) =>
             BlobMode: false);
     }
 
-    ParseResult result;
+    LivingMessiah.ShabbatPdf.Core.Models.ParseResult result;
     try
     {
         result = await pipeline.RunAsync(request, cancellationToken).ConfigureAwait(false);
