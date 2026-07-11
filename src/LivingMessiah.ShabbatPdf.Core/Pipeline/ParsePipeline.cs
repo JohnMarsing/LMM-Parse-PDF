@@ -1,6 +1,7 @@
 using LivingMessiah.ShabbatPdf.Core.Extraction;
 using LivingMessiah.ShabbatPdf.Core.Models;
 using LivingMessiah.ShabbatPdf.Core.Options;
+using LivingMessiah.ShabbatPdf.Core.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -8,8 +9,7 @@ using Microsoft.Extensions.Options;
 namespace LivingMessiah.ShabbatPdf.Core.Pipeline;
 
 /// <summary>
-/// Orchestrates extract → anchors → markdown → optional local write.
-/// Azure blob I/O is added in a later PR.
+/// Orchestrates extract → anchors → markdown → local write and/or Azure blob upload.
 /// </summary>
 public sealed class ParsePipeline : IParsePipeline
 {
@@ -17,6 +17,8 @@ public sealed class ParsePipeline : IParsePipeline
     private readonly AnchorLocator _anchorLocator;
     private readonly MarkdownBuilder _markdownBuilder;
     private readonly ParseOptions _options;
+    private readonly BlobOptions _blobOptions;
+    private readonly IBlobStore? _blobStore;
     private readonly ILogger<ParsePipeline> _logger;
 
     public ParsePipeline(
@@ -24,12 +26,16 @@ public sealed class ParsePipeline : IParsePipeline
         AnchorLocator anchorLocator,
         MarkdownBuilder markdownBuilder,
         IOptions<ParseOptions>? options = null,
+        IOptions<BlobOptions>? blobOptions = null,
+        IBlobStore? blobStore = null,
         ILogger<ParsePipeline>? logger = null)
     {
         _pageSource = pageSource ?? throw new ArgumentNullException(nameof(pageSource));
         _anchorLocator = anchorLocator ?? throw new ArgumentNullException(nameof(anchorLocator));
         _markdownBuilder = markdownBuilder ?? throw new ArgumentNullException(nameof(markdownBuilder));
         _options = options?.Value ?? new ParseOptions();
+        _blobOptions = blobOptions?.Value ?? new BlobOptions();
+        _blobStore = blobStore;
         _logger = logger ?? NullLogger<ParsePipeline>.Instance;
     }
 
@@ -37,19 +43,37 @@ public sealed class ParsePipeline : IParsePipeline
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        string? tempPdfPath = null;
+
         try
         {
-            if (string.IsNullOrWhiteSpace(request.LocalInputPath)
-                && request.PdfStream is null)
+            var hasLocal = !string.IsNullOrWhiteSpace(request.LocalInputPath);
+            var hasStream = request.PdfStream is not null;
+            var blobMode = request.BlobMode;
+
+            if (!hasLocal && !hasStream && !blobMode)
             {
                 return Fail(
                     ParseErrorCodes.SourceNotFound,
-                    "No PDF source: set LocalInputPath or PdfStream.");
+                    "No PDF source: set LocalInputPath, PdfStream, or BlobMode with SourceName.");
+            }
+
+            if (blobMode && _blobStore is null)
+            {
+                return Fail(
+                    ParseErrorCodes.Unexpected,
+                    "BlobMode requires IBlobStore (configure Blob:ConnectionString).");
             }
 
             var sourceName = string.IsNullOrWhiteSpace(request.SourceName)
                 ? Path.GetFileName(request.LocalInputPath ?? "document.pdf")
                 : Path.GetFileName(request.SourceName);
+
+            // Validate blob names (no path traversal)
+            if (blobMode && (sourceName.Contains("..") || sourceName.Contains('/') || sourceName.Contains('\\')))
+            {
+                return Fail(ParseErrorCodes.InvalidName, $"Invalid blob name: '{sourceName}'.");
+            }
 
             var nameMeta = FilenameParser.Parse(sourceName);
             if (!nameMeta.IsStandardPattern)
@@ -59,7 +83,6 @@ public sealed class ParsePipeline : IParsePipeline
                     sourceName);
             }
 
-            // Local mode is lenient; blob mode (later) can require the standard pattern.
             if (request.RequireStandardBlobName && !nameMeta.IsStandardPattern)
             {
                 return Fail(
@@ -67,48 +90,96 @@ public sealed class ParsePipeline : IParsePipeline
                     $"Blob name must match YYYY-MM-DD-Citation.pdf: '{sourceName}'.");
             }
 
-            var outputPath = ResolveOutputPath(request, nameMeta);
+            var mdBlobName = nameMeta.MarkdownFileName;
+            var localOutputPath = ResolveLocalOutputPath(request, nameMeta);
+            var destUriPreview = blobMode && _blobStore is not null
+                ? _blobStore.GetBlobUri(_blobOptions.DestinationContainer, mdBlobName)
+                : localOutputPath;
 
-            if (request.SkipIfDestinationExists
-                && !string.IsNullOrWhiteSpace(outputPath)
-                && File.Exists(outputPath))
+            // Skip-if-exists (local and/or blob destination)
+            if (request.SkipIfDestinationExists)
             {
-                _logger.LogInformation("Skip existing output: {OutputPath}", outputPath);
-                return new ParseResult(
-                    Success: true,
-                    Message: "Skipped: destination already exists.",
-                    DestinationUri: outputPath);
+                if (blobMode && _blobStore is not null)
+                {
+                    if (await _blobStore.ExistsAsync(
+                            _blobOptions.DestinationContainer, mdBlobName, ct).ConfigureAwait(false))
+                    {
+                        var uri = _blobStore.GetBlobUri(_blobOptions.DestinationContainer, mdBlobName);
+                        _logger.LogInformation("Skip existing blob: {Uri}", uri);
+                        return new ParseResult(true, "Skipped: destination already exists.", DestinationUri: uri);
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(localOutputPath) && File.Exists(localOutputPath))
+                {
+                    _logger.LogInformation("Skip existing output: {OutputPath}", localOutputPath);
+                    return new ParseResult(true, "Skipped: destination already exists.", DestinationUri: localOutputPath);
+                }
             }
 
-            if (!request.Overwrite
-                && !string.IsNullOrWhiteSpace(outputPath)
-                && File.Exists(outputPath)
-                && !request.DryRun)
+            if (blobMode && request.EnsureDestinationContainer && _blobStore is not null)
             {
-                return Fail(
-                    ParseErrorCodes.UploadFailed,
-                    $"Output exists and overwrite is disabled: {outputPath}");
+                _logger.LogInformation(
+                    "Ensuring destination container exists: {Container}",
+                    _blobOptions.DestinationContainer);
+                await _blobStore.EnsureContainerExistsAsync(
+                    _blobOptions.DestinationContainer, ct).ConfigureAwait(false);
             }
 
             ct.ThrowIfCancellationRequested();
 
-            IReadOnlyList<PdfPageText> pages;
-            if (!string.IsNullOrWhiteSpace(request.LocalInputPath))
+            // Resolve PDF path (local, temp download, or stream)
+            string? extractPath = null;
+            Stream? extractStream = null;
+
+            if (hasLocal)
             {
-                if (!File.Exists(request.LocalInputPath))
+                if (!File.Exists(request.LocalInputPath!))
                 {
                     return Fail(
                         ParseErrorCodes.SourceNotFound,
                         $"PDF file not found: {request.LocalInputPath}");
                 }
 
-                _logger.LogInformation("Extracting pages from {Path}", request.LocalInputPath);
-                pages = _pageSource.ExtractPages(request.LocalInputPath);
+                extractPath = request.LocalInputPath;
+            }
+            else if (blobMode)
+            {
+                tempPdfPath = CreateTempPdfPath(sourceName);
+                _logger.LogInformation(
+                    "Downloading {Container}/{Blob} to temp file",
+                    _blobOptions.SourceContainer,
+                    sourceName);
+
+                try
+                {
+                    await _blobStore!.DownloadToFileAsync(
+                        _blobOptions.SourceContainer,
+                        sourceName,
+                        tempPdfPath,
+                        ct).ConfigureAwait(false);
+                }
+                catch (FileNotFoundException ex)
+                {
+                    return Fail(ParseErrorCodes.SourceNotFound, ex.Message);
+                }
+
+                extractPath = tempPdfPath;
+            }
+            else
+            {
+                extractStream = request.PdfStream;
+            }
+
+            IReadOnlyList<PdfPageText> pages;
+            if (extractPath is not null)
+            {
+                _logger.LogInformation("Extracting pages from {Path}", extractPath);
+                pages = _pageSource.ExtractPages(extractPath);
             }
             else
             {
                 _logger.LogInformation("Extracting pages from stream ({SourceName})", sourceName);
-                pages = _pageSource.ExtractPages(request.PdfStream!);
+                pages = _pageSource.ExtractPages(extractStream!);
             }
 
             var anchors = _anchorLocator.Locate(pages);
@@ -137,10 +208,54 @@ public sealed class ParsePipeline : IParsePipeline
                     Message: "Dry-run succeeded.",
                     Markdown: markdown,
                     Anchors: anchors,
-                    DestinationUri: outputPath);
+                    DestinationUri: destUriPreview);
             }
 
-            if (string.IsNullOrWhiteSpace(outputPath))
+            string? destinationUri = null;
+
+            // Local write
+            if (!string.IsNullOrWhiteSpace(localOutputPath) && !blobMode)
+            {
+                if (!request.Overwrite && File.Exists(localOutputPath))
+                {
+                    return Fail(
+                        ParseErrorCodes.UploadFailed,
+                        $"Output exists and overwrite is disabled: {localOutputPath}");
+                }
+
+                var directory = Path.GetDirectoryName(localOutputPath);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                await File.WriteAllTextAsync(localOutputPath, markdown, ct).ConfigureAwait(false);
+                destinationUri = localOutputPath;
+            }
+
+            // Blob upload
+            if (blobMode && _blobStore is not null)
+            {
+                try
+                {
+                    await _blobStore.UploadTextAsync(
+                        _blobOptions.DestinationContainer,
+                        mdBlobName,
+                        markdown,
+                        request.Overwrite,
+                        ct).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("Container not found", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Fail(
+                        ParseErrorCodes.ContainerNotFound,
+                        ex.Message);
+                }
+
+                destinationUri = _blobStore.GetBlobUri(_blobOptions.DestinationContainer, mdBlobName);
+            }
+
+            if (destinationUri is null && string.IsNullOrWhiteSpace(localOutputPath))
             {
                 return new ParseResult(
                     Success: true,
@@ -148,14 +263,6 @@ public sealed class ParsePipeline : IParsePipeline
                     Markdown: markdown,
                     Anchors: anchors);
             }
-
-            var directory = Path.GetDirectoryName(outputPath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            await File.WriteAllTextAsync(outputPath, markdown, ct).ConfigureAwait(false);
 
             _logger.LogInformation(
                 "OK {Source} pages={Start}-{End} anchors={AStart}/{AEnd} introSkip={Intro} end={Method} chars={Chars} -> {Output}",
@@ -167,14 +274,14 @@ public sealed class ParsePipeline : IParsePipeline
                 string.Join(',', anchors.IntroSkippedPages),
                 anchors.EndMatchMethod,
                 markdown.Length,
-                outputPath);
+                destinationUri);
 
             return new ParseResult(
                 Success: true,
                 Message: "OK",
                 Markdown: markdown,
                 Anchors: anchors,
-                DestinationUri: outputPath);
+                DestinationUri: destinationUri);
         }
         catch (AnchorException ex)
         {
@@ -195,16 +302,48 @@ public sealed class ParsePipeline : IParsePipeline
             _logger.LogError(ex, "Unexpected parse failure");
             return Fail(ParseErrorCodes.Unexpected, ex.Message);
         }
+        finally
+        {
+            if (tempPdfPath is not null)
+            {
+                try
+                {
+                    if (File.Exists(tempPdfPath))
+                    {
+                        File.Delete(tempPdfPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to delete temp PDF {Path}", tempPdfPath);
+                }
+            }
+        }
     }
 
-    private static string? ResolveOutputPath(ParseRequest request, FilenameParseResult nameMeta)
+    private static string CreateTempPdfPath(string sourceName)
+    {
+        var safe = string.Concat(
+            Path.GetFileName(sourceName)
+                .Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        if (string.IsNullOrWhiteSpace(safe))
+        {
+            safe = "source.pdf";
+        }
+
+        var dir = Path.Combine(Path.GetTempPath(), "lmm-parse-pdf");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, $"{Guid.NewGuid():N}-{safe}");
+    }
+
+    private static string? ResolveLocalOutputPath(ParseRequest request, FilenameParseResult nameMeta)
     {
         if (!string.IsNullOrWhiteSpace(request.LocalOutputPath))
         {
             return Path.GetFullPath(request.LocalOutputPath);
         }
 
-        if (!string.IsNullOrWhiteSpace(request.LocalInputPath))
+        if (!request.BlobMode && !string.IsNullOrWhiteSpace(request.LocalInputPath))
         {
             var dir = Path.GetDirectoryName(Path.GetFullPath(request.LocalInputPath)) ?? ".";
             return Path.Combine(dir, nameMeta.MarkdownFileName);

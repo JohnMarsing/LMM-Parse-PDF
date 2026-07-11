@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "LivingMessiah.ShabbatPdf.Cli": {
+      "commandName": "Project",
+      "commandLineArgs": "--input \"C:\\Users\\JohnM\\Downloads\\2026-07-04-Lev-16.pdf\" --output \"C:\\Temp\\out.md\""
+    }
+  }
+}

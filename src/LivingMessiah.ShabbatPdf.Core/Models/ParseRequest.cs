@@ -11,4 +11,8 @@ public sealed record ParseRequest(
     bool Overwrite = true,
     bool SkipIfDestinationExists = false,
     bool DryRun = false,
-    bool RequireStandardBlobName = true);
+    bool RequireStandardBlobName = true,
+    /// <summary>When true, download PDF from source container and upload MD to destination container.</summary>
+    bool BlobMode = false,
+    /// <summary>Create destination container if missing (requires create permission).</summary>
+    bool EnsureDestinationContainer = false);
