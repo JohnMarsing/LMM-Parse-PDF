@@ -10,7 +10,14 @@ Parses Living Messiah Shabbat service agenda PDFs and saves the teaching block a
 
 ## Status
 
-**PR 1 complete:** solution skeleton and core models only. PDF extraction, Markdown, CLI, and Azure I/O come in later PRs.
+**PR 1–2 complete:** Core models + **PdfPig text-line extraction**, **Welcome/Bienvenido → Avinu anchors**, and **intro-page skip**. Markdown builder, CLI, and Azure I/O come in later PRs.
+
+| Piece | Status |
+|-------|--------|
+| Models / options | Done |
+| PdfPig line extract | Done (`PdfPig` **0.1.15**) |
+| Anchors + intro skip | Done |
+| Markdown / CLI / Azure | Not yet |
 
 See [docs/design-lmm-parse-pdf.md](docs/design-lmm-parse-pdf.md) for the full design.
 
@@ -32,12 +39,22 @@ dotnet build LMM-Parse-PDF.sln
 dotnet test LMM-Parse-PDF.sln
 ```
 
-## Planned extract rules (not implemented yet)
+## Extract rules (implemented in Core)
 
 1. **Start** after a page with full lines `Welcome` and `Bienvenido` / `Bienvenidos`
 2. **Skip** intro pages (Fair Use / agenda title patterns)
 3. **End** before the page titled `The Avinu Prayer`
 4. **Text layer only** — no OCR, no images in v1
+
+Usage from code (CLI comes later):
+
+```csharp
+var source = new PdfPigPageSource();
+var pages = source.ExtractPages(@"C:\path\to\agenda.pdf");
+var anchors = new AnchorLocator().Locate(pages);
+var slice = ContentSlicer.Slice(pages, anchors);
+// anchors.ContentStartPage .. ContentEndPage
+```
 
 ## License / content
 
