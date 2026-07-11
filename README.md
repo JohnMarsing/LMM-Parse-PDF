@@ -17,7 +17,8 @@ Parses Living Messiah Shabbat service agenda PDFs and saves the teaching block a
 | Models / options | Done |
 | PdfPig line extract | Done (`PdfPig` **0.1.15**) |
 | Anchors + intro skip | Done |
-| Markdown / CLI / Azure | Not yet |
+| Markdown builder | Done (`FilenameParser` + `MarkdownBuilder`) |
+| CLI / Azure | Not yet |
 
 See [docs/design-lmm-parse-pdf.md](docs/design-lmm-parse-pdf.md) for the full design.
 
@@ -53,7 +54,8 @@ var source = new PdfPigPageSource();
 var pages = source.ExtractPages(@"C:\path\to\agenda.pdf");
 var anchors = new AnchorLocator().Locate(pages);
 var slice = ContentSlicer.Slice(pages, anchors);
-// anchors.ContentStartPage .. ContentEndPage
+var markdown = new MarkdownBuilder().Build(slice, "2026-07-04-Lev-16.pdf");
+// File.WriteAllText("out.md", markdown);
 ```
 
 ## License / content
