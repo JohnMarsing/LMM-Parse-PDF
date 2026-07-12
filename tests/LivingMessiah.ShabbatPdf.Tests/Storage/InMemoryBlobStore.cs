@@ -46,6 +46,27 @@ public sealed class InMemoryBlobStore : IBlobStore
         bool overwrite,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(content);
+        return UploadBinaryAsync(
+            container,
+            blobName,
+            System.Text.Encoding.UTF8.GetBytes(content),
+            contentType: "text/markdown; charset=utf-8",
+            overwrite,
+            ct);
+    }
+
+    public Task UploadBinaryAsync(
+        string container,
+        string blobName,
+        byte[] content,
+        string contentType,
+        bool overwrite,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
+
         if (!_containers.Contains(container))
         {
             throw new InvalidOperationException(
@@ -58,7 +79,7 @@ public sealed class InMemoryBlobStore : IBlobStore
             throw new IOException($"Blob already exists: {container}/{blobName}");
         }
 
-        _blobs[key] = System.Text.Encoding.UTF8.GetBytes(content);
+        _blobs[key] = content;
         return Task.CompletedTask;
     }
 

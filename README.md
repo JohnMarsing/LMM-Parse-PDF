@@ -18,7 +18,9 @@ Parses Living Messiah Shabbat service agenda PDFs and saves the teaching block a
 | Markdown builder | Done |
 | CLI local mode | Done |
 | **Azure blob I/O** | **Done** (`--blob`, temp download, MD upload) |
+| **Teaching PDF slice** | **Done** (`*-teaching.pdf` next to `.md` / in `shabbat-service`) |
 | Optional Azure Function | Not yet (PR 7) |
+| Markdown from teaching PDF | Not yet (PR 8b) |
 
 See [docs/design-lmm-parse-pdf.md](docs/design-lmm-parse-pdf.md) for the full design.
 
@@ -71,9 +73,35 @@ dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- `
   --blob "2026-07-04-Lev-16.pdf"
 ```
 
-Downloads the PDF to a **temp file** (handles large agendas), extracts, uploads  
-`https://livingmessiahstorage.blob.core.windows.net/shabbat-service-md/2026-07-04-Lev-16.md`  
-with content-type `text/markdown; charset=utf-8`.
+### Batch all agendas in the source container
+
+For a one-time backfill (~100 PDFs). Requires **Azure CLI** (`az login`) and the same `Blob:ConnectionString` as a single run. Skips `*-teaching.pdf` and uses `--skip-existing` by default so you can re-run after failures.
+
+```powershell
+# Preview list only
+.\scripts\batch-blob-parse.ps1 -WhatIf
+
+# First 5 (smoke)
+.\scripts\batch-blob-parse.ps1 -MaxCount 5
+
+# Full container
+.\scripts\batch-blob-parse.ps1
+
+# Create destination container if missing (once)
+.\scripts\batch-blob-parse.ps1 -EnsureContainer
+```
+
+Logs go under `out\batch-blob-parse-*.log`. See the script header for more parameters.
+
+Downloads the PDF to a **temp file** (handles large agendas), extracts, then:
+
+1. Uploads a **teaching-only PDF** (content page range) to the **source** container:  
+   `https://livingmessiahstorage.blob.core.windows.net/shabbat-service/2026-07-04-Lev-16-teaching.pdf`
+2. Uploads Markdown to the **destination** container:  
+   `https://livingmessiahstorage.blob.core.windows.net/shabbat-service-md/2026-07-04-Lev-16.md`  
+   with content-type `text/markdown; charset=utf-8`.
+
+Local mode also writes `*-teaching.pdf` in the same folder as the `.md`.
 
 ### Flags
 

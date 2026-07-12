@@ -4,6 +4,7 @@ using LivingMessiah.ShabbatPdf.Core.Options;
 using LivingMessiah.ShabbatPdf.Core.Pipeline;
 using LivingMessiah.ShabbatPdf.Tests.Storage;
 using Microsoft.Extensions.Options;
+using UglyToad.PdfPig;
 using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Fonts.Standard14Fonts;
 using UglyToad.PdfPig.Writer;
@@ -40,6 +41,37 @@ public class ParsePipelineBlobTests
             store.Blobs[$"{DestContainer}/2026-07-04-Lev-16.md"]);
         Assert.Contains("Jude 6 teaching text", md);
         Assert.Contains("source_pdf: 2026-07-04-Lev-16.pdf", md);
+
+        // Teaching PDF uploaded to source container
+        var teachingKey = $"{SourceContainer}/2026-07-04-Lev-16-teaching.pdf";
+        Assert.True(store.Blobs.ContainsKey(teachingKey));
+        Assert.Contains("2026-07-04-Lev-16-teaching.pdf", result.TeachingPdfUri);
+        using var teachDoc = PdfDocument.Open(store.Blobs[teachingKey]);
+        Assert.Equal(1, teachDoc.NumberOfPages);
+        Assert.Contains("Jude 6 teaching text", teachDoc.GetPage(1).Text);
+    }
+
+    [Fact]
+    public async Task RunAsync_BlobMode_SkipExisting_SkipsTeachingWhenPresent()
+    {
+        var store = new InMemoryBlobStore();
+        await store.EnsureContainerExistsAsync(SourceContainer);
+        await store.EnsureContainerExistsAsync(DestContainer);
+        store.Seed(SourceContainer, PdfName, CreateAgendaPdf());
+        var stubTeaching = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x73, 0x74, 0x75, 0x62 };
+        store.Seed(SourceContainer, "2026-07-04-Lev-16-teaching.pdf", stubTeaching);
+
+        var pipeline = CreatePipeline(store);
+        var result = await pipeline.RunAsync(new ParseRequest(
+            SourceName: PdfName,
+            BlobMode: true,
+            SkipIfDestinationExists: true,
+            RequireStandardBlobName: true));
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(store.Blobs.ContainsKey($"{DestContainer}/2026-07-04-Lev-16.md"));
+        Assert.Equal(stubTeaching, store.Blobs[$"{SourceContainer}/2026-07-04-Lev-16-teaching.pdf"]);
+        Assert.Contains("2026-07-04-Lev-16-teaching.pdf", result.TeachingPdfUri);
     }
 
     [Fact]

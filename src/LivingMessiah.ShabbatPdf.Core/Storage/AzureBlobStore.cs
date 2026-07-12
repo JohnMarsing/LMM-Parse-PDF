@@ -87,22 +87,43 @@ public sealed class AzureBlobStore : IBlobStore
         bool overwrite,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(content);
+        var bytes = System.Text.Encoding.UTF8.GetBytes(content);
+        await UploadBinaryAsync(
+                container,
+                blobName,
+                bytes,
+                contentType: "text/markdown; charset=utf-8",
+                overwrite,
+                ct)
+            .ConfigureAwait(false);
+    }
+
+    public async Task UploadBinaryAsync(
+        string container,
+        string blobName,
+        byte[] content,
+        string contentType,
+        bool overwrite,
+        CancellationToken ct = default)
+    {
         ValidateNames(container, blobName);
         ArgumentNullException.ThrowIfNull(content);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
 
         var blob = _client.GetBlobContainerClient(container).GetBlobClient(blobName);
         var options = new BlobUploadOptions
         {
             HttpHeaders = new BlobHttpHeaders
             {
-                ContentType = "text/markdown; charset=utf-8"
+                ContentType = contentType
             },
             Conditions = overwrite
                 ? null
                 : new BlobRequestConditions { IfNoneMatch = new ETag("*") }
         };
 
-        await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
+        await using var stream = new MemoryStream(content, writable: false);
         try
         {
             await blob.UploadAsync(stream, options, ct).ConfigureAwait(false);

@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 namespace LivingMessiah.ShabbatPdf.Core.Pipeline;
 
 /// <summary>
-/// Orchestrates extract → anchors → markdown → local write and/or Azure blob upload.
+/// Orchestrates extract → anchors → teaching PDF slice → markdown → local/blob write.
 /// </summary>
 public sealed class ParsePipeline : IParsePipeline
 {
@@ -91,12 +91,15 @@ public sealed class ParsePipeline : IParsePipeline
             }
 
             var mdBlobName = nameMeta.MarkdownFileName;
+            var teachingBlobName = nameMeta.TeachingPdfFileName;
             var localOutputPath = ResolveLocalOutputPath(request, nameMeta);
+            var localTeachingPath = ResolveLocalTeachingPdfPath(request, nameMeta, localOutputPath);
             var destUriPreview = blobMode && _blobStore is not null
                 ? _blobStore.GetBlobUri(_blobOptions.DestinationContainer, mdBlobName)
                 : localOutputPath;
 
-            // Skip-if-exists (local and/or blob destination)
+            // Skip-if-exists for Markdown destination (full early exit — same as before).
+            // Teaching PDF skip is handled later per-artifact so MD can still run.
             if (request.SkipIfDestinationExists)
             {
                 if (blobMode && _blobStore is not null)
@@ -211,9 +214,28 @@ public sealed class ParsePipeline : IParsePipeline
                     DestinationUri: destUriPreview);
             }
 
+            // --- Teaching PDF (page-range slice) ---
+            string? teachingPdfUri = null;
+            var teachingExport = await TryExportTeachingPdfAsync(
+                    request,
+                    extractPath,
+                    extractStream,
+                    anchors,
+                    localTeachingPath,
+                    teachingBlobName,
+                    ct)
+                .ConfigureAwait(false);
+
+            if (!teachingExport.Success)
+            {
+                return Fail(teachingExport.ErrorCode!, teachingExport.ErrorMessage!);
+            }
+
+            teachingPdfUri = teachingExport.Uri;
+
             string? destinationUri = null;
 
-            // Local write
+            // Local Markdown write
             if (!string.IsNullOrWhiteSpace(localOutputPath) && !blobMode)
             {
                 if (!request.Overwrite && File.Exists(localOutputPath))
@@ -233,7 +255,7 @@ public sealed class ParsePipeline : IParsePipeline
                 destinationUri = localOutputPath;
             }
 
-            // Blob upload
+            // Blob Markdown upload
             if (blobMode && _blobStore is not null)
             {
                 try
@@ -261,11 +283,12 @@ public sealed class ParsePipeline : IParsePipeline
                     Success: true,
                     Message: "Parsed successfully (no output path).",
                     Markdown: markdown,
-                    Anchors: anchors);
+                    Anchors: anchors,
+                    TeachingPdfUri: teachingPdfUri);
             }
 
             _logger.LogInformation(
-                "OK {Source} pages={Start}-{End} anchors={AStart}/{AEnd} introSkip={Intro} end={Method} chars={Chars} -> {Output}",
+                "OK {Source} pages={Start}-{End} anchors={AStart}/{AEnd} introSkip={Intro} end={Method} chars={Chars} teaching={Teaching} -> {Output}",
                 sourceName,
                 anchors.ContentStartPage,
                 anchors.ContentEndPage,
@@ -274,6 +297,7 @@ public sealed class ParsePipeline : IParsePipeline
                 string.Join(',', anchors.IntroSkippedPages),
                 anchors.EndMatchMethod,
                 markdown.Length,
+                teachingPdfUri ?? "(none)",
                 destinationUri);
 
             return new ParseResult(
@@ -281,7 +305,8 @@ public sealed class ParsePipeline : IParsePipeline
                 Message: "OK",
                 Markdown: markdown,
                 Anchors: anchors,
-                DestinationUri: destinationUri);
+                DestinationUri: destinationUri,
+                TeachingPdfUri: teachingPdfUri);
         }
         catch (AnchorException ex)
         {
@@ -350,6 +375,168 @@ public sealed class ParsePipeline : IParsePipeline
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Teaching PDF sits next to the Markdown file (local mode).
+    /// </summary>
+    private static string? ResolveLocalTeachingPdfPath(
+        ParseRequest request,
+        FilenameParseResult nameMeta,
+        string? localOutputPath)
+    {
+        if (request.BlobMode)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(localOutputPath))
+        {
+            var dir = Path.GetDirectoryName(localOutputPath) ?? ".";
+            return Path.Combine(dir, nameMeta.TeachingPdfFileName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.LocalInputPath))
+        {
+            var dir = Path.GetDirectoryName(Path.GetFullPath(request.LocalInputPath)) ?? ".";
+            return Path.Combine(dir, nameMeta.TeachingPdfFileName);
+        }
+
+        return null;
+    }
+
+    private async Task<(bool Success, string? Uri, string? ErrorCode, string? ErrorMessage)> TryExportTeachingPdfAsync(
+        ParseRequest request,
+        string? extractPath,
+        Stream? extractStream,
+        AnchorResult anchors,
+        string? localTeachingPath,
+        string teachingBlobName,
+        CancellationToken ct)
+    {
+        var blobMode = request.BlobMode;
+        var start = anchors.ContentStartPage;
+        var end = anchors.ContentEndPage;
+
+        // Skip existing teaching artifact only (MD may still be written).
+        if (request.SkipIfDestinationExists)
+        {
+            if (blobMode && _blobStore is not null)
+            {
+                if (await _blobStore.ExistsAsync(
+                        _blobOptions.SourceContainer, teachingBlobName, ct).ConfigureAwait(false))
+                {
+                    var uri = _blobStore.GetBlobUri(_blobOptions.SourceContainer, teachingBlobName);
+                    _logger.LogInformation("Skip existing teaching blob: {Uri}", uri);
+                    return (true, uri, null, null);
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(localTeachingPath) && File.Exists(localTeachingPath))
+            {
+                _logger.LogInformation("Skip existing teaching PDF: {Path}", localTeachingPath);
+                return (true, localTeachingPath, null, null);
+            }
+        }
+
+        byte[] teachingBytes;
+        try
+        {
+            if (extractPath is not null)
+            {
+                teachingBytes = TeachingPdfWriter.WritePageRangeToBytes(extractPath, start, end);
+            }
+            else if (extractStream is not null)
+            {
+                teachingBytes = TeachingPdfWriter.WritePageRangeToBytes(extractStream, start, end);
+            }
+            else
+            {
+                return (
+                    false,
+                    null,
+                    ParseErrorCodes.Unexpected,
+                    "Cannot export teaching PDF: no PDF path or stream available.");
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException)
+        {
+            _logger.LogError(ex, "Teaching PDF slice failed");
+            return (false, null, ParseErrorCodes.IoError, ex.Message);
+        }
+
+        string? teachingUri = null;
+
+        // Local write (next to .md)
+        if (!string.IsNullOrWhiteSpace(localTeachingPath) && !blobMode)
+        {
+            if (!request.Overwrite && File.Exists(localTeachingPath))
+            {
+                return (
+                    false,
+                    null,
+                    ParseErrorCodes.UploadFailed,
+                    $"Teaching PDF exists and overwrite is disabled: {localTeachingPath}");
+            }
+
+            var directory = Path.GetDirectoryName(localTeachingPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            await File.WriteAllBytesAsync(localTeachingPath, teachingBytes, ct).ConfigureAwait(false);
+            teachingUri = localTeachingPath;
+            _logger.LogInformation(
+                "Wrote teaching PDF pages={Start}-{End} -> {Path}",
+                start,
+                end,
+                localTeachingPath);
+        }
+
+        // Azure: upload to source container (same as full agenda)
+        if (blobMode && _blobStore is not null)
+        {
+            try
+            {
+                await _blobStore.UploadBinaryAsync(
+                        _blobOptions.SourceContainer,
+                        teachingBlobName,
+                        teachingBytes,
+                        contentType: "application/pdf",
+                        request.Overwrite,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("Container not found", StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, null, ParseErrorCodes.ContainerNotFound, ex.Message);
+            }
+            catch (IOException ex)
+            {
+                return (false, null, ParseErrorCodes.UploadFailed, ex.Message);
+            }
+
+            teachingUri = _blobStore.GetBlobUri(_blobOptions.SourceContainer, teachingBlobName);
+            _logger.LogInformation(
+                "Uploaded teaching PDF pages={Start}-{End} -> {Uri}",
+                start,
+                end,
+                teachingUri);
+        }
+
+        // Blob mode may still want a local copy when LocalOutputPath is set — not used today.
+        // Stream-only runs with no local/blob destination: return bytes path as null but success
+        // so MD can still proceed (no place to put teaching file).
+        if (teachingUri is null)
+        {
+            _logger.LogInformation(
+                "Teaching PDF built in memory ({Bytes} bytes, pages {Start}-{End}) but no local/blob destination.",
+                teachingBytes.Length,
+                start,
+                end);
+        }
+
+        return (true, teachingUri, null, null);
     }
 
     private static ParseResult Fail(string code, string message) =>

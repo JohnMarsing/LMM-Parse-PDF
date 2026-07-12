@@ -19,6 +19,17 @@ public interface IBlobStore
         bool overwrite,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Upload binary content (e.g. a teaching PDF) with the given content type.
+    /// </summary>
+    Task UploadBinaryAsync(
+        string container,
+        string blobName,
+        byte[] content,
+        string contentType,
+        bool overwrite,
+        CancellationToken ct = default);
+
     Task<bool> ExistsAsync(
         string container,
         string blobName,

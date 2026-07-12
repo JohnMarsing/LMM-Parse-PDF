@@ -3,6 +3,7 @@ using LivingMessiah.ShabbatPdf.Core.Models;
 using LivingMessiah.ShabbatPdf.Core.Options;
 using LivingMessiah.ShabbatPdf.Core.Pipeline;
 using Microsoft.Extensions.Options;
+using UglyToad.PdfPig;
 using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Fonts.Standard14Fonts;
 using UglyToad.PdfPig.Writer;
@@ -16,6 +17,9 @@ public class ParsePipelineTests
     {
         var pdfPath = Path.Combine(Path.GetTempPath(), $"lmm-pipe-{Guid.NewGuid():N}.pdf");
         var mdPath = Path.ChangeExtension(pdfPath, ".md");
+        var teachingPath = Path.Combine(
+            Path.GetDirectoryName(mdPath)!,
+            "2026-07-04-Lev-16-teaching.pdf");
 
         try
         {
@@ -39,11 +43,66 @@ public class ParsePipelineTests
             Assert.Contains("<!-- page 3 -->", result.Markdown);
             Assert.Contains("Jude 6 teaching text", result.Markdown);
             Assert.DoesNotContain("Fair Use", result.Markdown, StringComparison.OrdinalIgnoreCase);
+
+            // Teaching PDF next to .md (content page only)
+            Assert.True(File.Exists(teachingPath), "Expected teaching PDF next to Markdown.");
+            Assert.Equal(teachingPath, result.TeachingPdfUri);
+            using (var teachDoc = PdfDocument.Open(teachingPath))
+            {
+                Assert.Equal(1, teachDoc.NumberOfPages);
+                Assert.Contains("Jude 6 teaching text", teachDoc.GetPage(1).Text);
+            }
         }
         finally
         {
             TryDelete(pdfPath);
             TryDelete(mdPath);
+            TryDelete(teachingPath);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_LocalPdf_SkipExisting_SkipsTeachingWhenPresent()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"lmm-pipe-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var pdfPath = Path.Combine(dir, "2026-07-04-Lev-16.pdf");
+        var mdPath = Path.Combine(dir, "2026-07-04-Lev-16.md");
+        var teachingPath = Path.Combine(dir, "2026-07-04-Lev-16-teaching.pdf");
+
+        try
+        {
+            File.WriteAllBytes(pdfPath, CreateAgendaPdf());
+            // MD missing so pipeline does not early-exit; teaching already present
+            File.WriteAllBytes(teachingPath, [0x25, 0x50, 0x44, 0x46]); // "%PDF" stub
+            var originalTeaching = await File.ReadAllBytesAsync(teachingPath);
+
+            var pipeline = CreatePipeline();
+            var result = await pipeline.RunAsync(new ParseRequest(
+                SourceName: "2026-07-04-Lev-16.pdf",
+                LocalInputPath: pdfPath,
+                LocalOutputPath: mdPath,
+                SkipIfDestinationExists: true,
+                RequireStandardBlobName: false));
+
+            Assert.True(result.Success, result.Message);
+            Assert.True(File.Exists(mdPath));
+            Assert.Equal(originalTeaching, await File.ReadAllBytesAsync(teachingPath));
+            Assert.Equal(teachingPath, result.TeachingPdfUri);
+        }
+        finally
+        {
+            TryDelete(pdfPath);
+            TryDelete(mdPath);
+            TryDelete(teachingPath);
+            try
+            {
+                Directory.Delete(dir);
+            }
+            catch
+            {
+                // ignore
+            }
         }
     }
 
@@ -68,6 +127,11 @@ public class ParsePipelineTests
             Assert.True(result.Success, result.Message);
             Assert.False(File.Exists(mdPath));
             Assert.False(string.IsNullOrEmpty(result.Markdown));
+            Assert.Null(result.TeachingPdfUri);
+            var teachingPath = Path.Combine(
+                Path.GetDirectoryName(mdPath)!,
+                "2026-07-04-Lev-16-teaching.pdf");
+            Assert.False(File.Exists(teachingPath));
         }
         finally
         {

@@ -19,6 +19,7 @@ public class FilenameParserTests
         Assert.Equal(expectedDate, result.ServiceDate);
         Assert.Equal(expectedCitation, result.Citation);
         Assert.Equal($"{expectedDate}-{expectedCitation}.md", result.MarkdownFileName);
+        Assert.Equal($"{expectedDate}-{expectedCitation}-teaching.pdf", result.TeachingPdfFileName);
         Assert.True(FilenameParser.IsStandardBlobName(input));
     }
 
@@ -31,6 +32,7 @@ public class FilenameParserTests
         Assert.Null(result.ServiceDate);
         Assert.Equal("unknown", result.Citation);
         Assert.Equal("notes.md", result.MarkdownFileName);
+        Assert.Equal("notes-teaching.pdf", result.TeachingPdfFileName);
         Assert.False(FilenameParser.IsStandardBlobName("notes.pdf"));
     }
 

@@ -182,12 +182,16 @@ root.SetAction(async (parseResult, cancellationToken) =>
         var anchors = result.Anchors;
         if (anchors is not null)
         {
+            var teaching = string.IsNullOrWhiteSpace(result.TeachingPdfUri)
+                ? ""
+                : $" teaching={result.TeachingPdfUri}";
             Console.WriteLine(
                 $"OK {displayName} pages={anchors.ContentStartPage}-{anchors.ContentEndPage} " +
                 $"anchors={anchors.StartAnchorPage}/{anchors.EndAnchorPage} " +
                 $"introSkip={string.Join(',', anchors.IntroSkippedPages)} " +
                 $"end={anchors.EndMatchMethod} " +
-                $"chars={result.Markdown?.Length ?? 0} " +
+                $"chars={result.Markdown?.Length ?? 0}" +
+                $"{teaching} " +
                 $"-> {result.DestinationUri ?? "(dry-run)"}");
         }
         else

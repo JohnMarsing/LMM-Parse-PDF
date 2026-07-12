@@ -12,4 +12,10 @@ public sealed record FilenameParseResult(
 {
     /// <summary>Destination blob/file name with .md extension.</summary>
     public string MarkdownFileName => BaseNameWithoutExtension + ".md";
+
+    /// <summary>
+    /// Teaching-only PDF name: same base with <c>-teaching</c> before the extension
+    /// (e.g. <c>2026-07-04-Lev-16-teaching.pdf</c>).
+    /// </summary>
+    public string TeachingPdfFileName => BaseNameWithoutExtension + "-teaching.pdf";
 }
