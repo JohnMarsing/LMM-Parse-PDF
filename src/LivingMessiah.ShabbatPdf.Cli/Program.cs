@@ -56,6 +56,12 @@ var allowNonstandardOption = new Option<bool>("--allow-nonstandard-name")
     DefaultValueFactory = _ => false
 };
 
+var teachingOnlyOption = new Option<bool>("--teaching-only")
+{
+    Description = "Export only the teaching PDF page slice (*-teaching.pdf). Do not build or write Markdown.",
+    DefaultValueFactory = _ => false
+};
+
 var root = new RootCommand(
     "Parse Living Messiah Shabbat agenda PDFs to Markdown (local file or Azure blob).")
 {
@@ -65,7 +71,8 @@ var root = new RootCommand(
     dryRunOption,
     skipExistingOption,
     ensureContainerOption,
-    allowNonstandardOption
+    allowNonstandardOption,
+    teachingOnlyOption
 };
 
 root.SetAction(async (parseResult, cancellationToken) =>
@@ -77,6 +84,7 @@ root.SetAction(async (parseResult, cancellationToken) =>
     var skipExisting = parseResult.GetValue(skipExistingOption);
     var ensureContainer = parseResult.GetValue(ensureContainerOption);
     var allowNonstandard = parseResult.GetValue(allowNonstandardOption);
+    var teachingOnly = parseResult.GetValue(teachingOnlyOption);
 
     var blobMode = !string.IsNullOrWhiteSpace(blobName);
     var localMode = input is not null;
@@ -149,7 +157,8 @@ root.SetAction(async (parseResult, cancellationToken) =>
             Overwrite: parseOptions.Overwrite,
             SkipIfDestinationExists: skipExisting,
             DryRun: dryRun,
-            RequireStandardBlobName: !allowNonstandard && parseOptions.RequireStandardBlobName);
+            RequireStandardBlobName: !allowNonstandard && parseOptions.RequireStandardBlobName,
+            TeachingOnly: teachingOnly);
     }
     else
     {
@@ -162,7 +171,8 @@ root.SetAction(async (parseResult, cancellationToken) =>
             SkipIfDestinationExists: skipExisting,
             DryRun: dryRun,
             RequireStandardBlobName: false,
-            BlobMode: false);
+            BlobMode: false,
+            TeachingOnly: teachingOnly);
     }
 
     LivingMessiah.ShabbatPdf.Core.Models.ParseResult result;
@@ -185,6 +195,9 @@ root.SetAction(async (parseResult, cancellationToken) =>
             var teaching = string.IsNullOrWhiteSpace(result.TeachingPdfUri)
                 ? ""
                 : $" teaching={result.TeachingPdfUri}";
+            var dest = result.DestinationUri
+                       ?? result.TeachingPdfUri
+                       ?? "(dry-run)";
             Console.WriteLine(
                 $"OK {displayName} pages={anchors.ContentStartPage}-{anchors.ContentEndPage} " +
                 $"anchors={anchors.StartAnchorPage}/{anchors.EndAnchorPage} " +
@@ -192,7 +205,7 @@ root.SetAction(async (parseResult, cancellationToken) =>
                 $"end={anchors.EndMatchMethod} " +
                 $"chars={result.Markdown?.Length ?? 0}" +
                 $"{teaching} " +
-                $"-> {result.DestinationUri ?? "(dry-run)"}");
+                $"-> {dest}");
         }
         else
         {

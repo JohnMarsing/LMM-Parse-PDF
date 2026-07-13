@@ -826,3 +826,200 @@ When ready:
 2. Write files e.g. `{base}/page-{n:000}-img-{i:00}.png` to local folder or private blob prefix.
 3. Optionally insert `![…](…)` into MD or keep a sidecar index.
 4. Still **no OCR** unless a separate decision adds it.
+
+      "commandLineArgs": "--input \"C:\\Users\\JohnM\\Downloads\\2026-07-04-Lev-16.pdf\" --blob 2026-07-04-Lev-16.pdf"
+
+## Command Lines
+Flags in place: 
+- `--input`, `--output`, 
+- `--blob`, 
+- `--dry-run`, 
+- `--skip-existing`, 
+- `--ensure-container`, 
+- `--allow-nonstandard-name`
+
+What I want to next make a smaller version of the PDF but only with containing teaching/study portion.
+I want to name these pdfs the same as the original but append -teaching to it
+
+
+
+Decisions to lock before coding
+
+1. When does it run? => I want this to be the first step in my workflow. Then the markdown extraction will use the *-teaching.pdf files as it's source thereby eliminating the need to parse the teaching pages. 
+
+2. Where does the file go?
+   • Local: next to .md => YES
+   • Azure: same container as source (shabbat-service) => YES
+
+3. Skip / overwrite
+   • Reuse --skip-existing for the teaching blob/file as well => YES
+   • Default overwrite (same as MD)? => Yes
+ A — Use teaching-relative pages in comments (simplest).
+
+ dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- `
+  --input "C:\Users\JohnM\Downloads\2026-06-27-Lev-15.pdf" `
+  --output ".\out\2026-06-27-Lev-15.pdf"
+
+dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- --blob "2026-07-04-Lev-16.pdf" --dry-run  
+
+dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- --blob "2026-07-04-Lev-16.pdf"
+
+## Batch 100
+
+```
+cd C:\Source\repos\LMM-Parse-PDF
+
+# List only full agendas (exclude already-sliced teaching PDFs)
+$blobs = az storage blob list `
+  --account-name livingmessiahstorage `
+  --container-name shabbat-service `
+  --auth-mode login `
+  --query "[?ends_with(name, '.pdf') && !ends_with(name, '-teaching.pdf')].name" `
+  -o tsv
+
+$failed = @()
+foreach ($name in $blobs) {
+  Write-Host "=== $name ===" -ForegroundColor Cyan
+  dotnet run --project src/LivingMessiah.ShabbatPdf.Cli --no-build -- `
+    --blob $name `
+    --skip-existing
+
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "FAILED: $name (exit $LASTEXITCODE)" -ForegroundColor Red
+    $failed += $name
+  }
+}
+
+Write-Host "Done. Failures: $($failed.Count)"
+$failed
+```
+
+How to run
+
+# Smoke (5 files)
+.\scripts\batch-blob-parse.ps1 -MaxCount 5
+
+# Full container
+.\scripts\batch-blob-parse.ps1
+
+Single blob:
+
+dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- `
+  --blob "2026-07-04-Lev-16.pdf" --teaching-only
+
+
+
+LMM-Parse-PDF  .\scripts\batch-blob-parse.ps1 -MaxCount 5
+2026-07-12 12:42:00  Log file: C:\Source\repos\LMM-Parse-PDF\out\batch-blob-parse-20260712-124200.log
+2026-07-12 12:42:00  Repo: C:\Source\repos\LMM-Parse-PDF
+2026-07-12 12:42:00  Listing pdf blobs in livingmessiahstorage / shabbat-service ...
+az : ERROR:
+At C:\Source\repos\LMM-Parse-PDF\scripts\batch-blob-parse.ps1:66 char:13
++ $listJson = az storage blob list `
++             ~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (ERROR: :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+
+cd C:\Source\repos\LMM-Parse-PDF
+
+# Preview
+.\scripts\batch-blob-parse.ps1 -WhatIf -MaxCount 5
+
+# Smoke
+.\scripts\batch-blob-parse.ps1 -MaxCount 5
+
+# Full batch
+.\scripts\batch-blob-parse.ps1
+
+
+2026-07-12 13:36:04  Log:       C:\Source\repos\LMM-Parse-PDF\out\batch-blob-parse-20260712-132416.log
+2026-07-12 13:36:04  Failed blob names:
+2026-07-12 13:36:04    2025-05-31-Gen-32-04-to-33-17.pdf - Redo
+2026-07-12 13:36:04    2025-08-02-Gen-42-18-to-43-23.pdf - Redo
+2026-07-12 13:36:04    2025-11-22-Exo-13-21-to-15-21.pdf - BAD NAME: 2025-11-29-2025-11-29-Exo-15-22-to-16-24-teaching.pdf, no need to redo, just rename them
+2026-07-12 13:36:04    2026-04-18-Lev-3.pdf              - NO TEACHING
+
+
+### Batch upload of two 
+You don’t need a full container pass. Best options, simplest first:
+
+1. Two direct CLI runs 
+
+```powershell
+cd C:\Source\repos\LMM-Parse-PDF
+
+dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- `
+  --blob "2025-05-31-Gen-32-04-to-33-17.pdf" --teaching-only
+
+dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- `
+  --blob "2025-08-02-Gen-42-18-to-43-23.pdf" --teaching-only
+```  
+
+# Azure Function
+All 59 tests pass; solution builds cleanly.
+
+What you got
+
+New project: src/LivingMessiah.ShabbatPdf.Functions
+
+┌──────────┬────────────────────────────────────────────────────────────────────────────────┐
+│ Piece    │ Behavior                                                                       │
+├──────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ Trigger  │ Blob on shabbat-service (%Blob__SourceContainer%/{name})                       │
+├──────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ Skips    │ Non-PDF and *-teaching.pdf (no loop when teaching is written back)             │
+├──────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ Input    │ Trigger stream → temp file (no re-download of the source blob)                 │
+├──────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ Pipeline │ Same ParsePipeline as the CLI                                                  │
+├──────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ Outputs  │ *-teaching.pdf → source container + .md → shabbat-service-md                   │
+├──────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ Errors   │ Anchor/name failures: log only (no endless retry). I/O failures: throw (retry) │
+└──────────┴────────────────────────────────────────────────────────────────────────────────┘
+
+Key files
+
+• ProcessShabbatPdfFunction.cs — trigger handler
+• ShabbatBlobTriggerFilter.cs — skip rules
+• Program.cs — DI (Core services + MI/connection string via BlobOptions)
+• local.settings.json.example — copy to local.settings.json for local runs
+• host.json — 10 min timeout, blob parallelism = 1
+
+Try it locally
+
+copy src\LivingMessiah.ShabbatPdf.Functions\local.settings.json.example `
+     src\LivingMessiah.ShabbatPdf.Functions\local.settings.json
+
+Set both Blob and Blob__ConnectionString to your storage connection string, then:
+
+### Azure Function Plans
+Azure Functions offers five primary hosting plans, each tailored to different performance, scalability, and cost requirements. The **Flex Consumption plan** is the **recommended default for Linux-based serverless apps**, offering fast horizontal scaling up to 1,000 instances, virtual network integration, and configurable "Always Ready" instances to reduce cold starts.  It supports memory sizes of 512 MB, 2 GB, or 4 GB and allows unbounded execution timeouts.
+
+# Deployed
+
+App	lmm-shabbat-pdf
+Resource group	LmmWebAppGroup
+Plan	Flex Consumption (West US) — good for large PDFs
+URL	https://lmm-shabbat-pdf.azurewebsites.net
+Function	ProcessShabbatPdf (dotnet-isolated 8)
+Storage	livingmessiahstorage
+
+Configured settings
+• Blob trigger + pipeline use the storage connection string
+• Source: shabbat-service
+• Destination: shabbat-service-md (container ensured)
+• *-teaching.pdf is skipped so writing teaching PDFs does not re-trigger forever
+
+Redeploy later
+
+.\scripts\deploy-function.ps1
+
+### Smoke-test
+1. Upload a full agenda PDF to shabbat-service (or re-upload an existing one).
+2. Wait a bit (cold start on Flex is normal).
+3. Check for:
+   • shabbat-service/...-teaching.pdf
+   • shabbat-service-md/....md
+4. Logs: Azure Portal → lmm-shabbat-pdf → Log stream / Monitor

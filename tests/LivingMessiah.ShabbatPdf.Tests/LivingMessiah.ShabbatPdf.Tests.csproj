@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LivingMessiah.ShabbatPdf.Core\LivingMessiah.ShabbatPdf.Core.csproj" />
+    <ProjectReference Include="..\..\src\LivingMessiah.ShabbatPdf.Functions\LivingMessiah.ShabbatPdf.Functions.csproj" />
   </ItemGroup>
 
 </Project>

@@ -75,6 +75,56 @@ public class ParsePipelineBlobTests
     }
 
     [Fact]
+    public async Task RunAsync_BlobMode_TeachingOnly_UploadsTeaching_NotMarkdown()
+    {
+        var store = new InMemoryBlobStore();
+        await store.EnsureContainerExistsAsync(SourceContainer);
+        // destination container intentionally not created
+        store.Seed(SourceContainer, PdfName, CreateAgendaPdf());
+
+        var pipeline = CreatePipeline(store);
+        var result = await pipeline.RunAsync(new ParseRequest(
+            SourceName: PdfName,
+            BlobMode: true,
+            TeachingOnly: true,
+            RequireStandardBlobName: true));
+
+        Assert.True(result.Success, result.Message);
+        Assert.Null(result.Markdown);
+        Assert.Null(result.DestinationUri);
+        Assert.Contains("2026-07-04-Lev-16-teaching.pdf", result.TeachingPdfUri);
+        Assert.True(store.Blobs.ContainsKey($"{SourceContainer}/2026-07-04-Lev-16-teaching.pdf"));
+        Assert.False(store.Blobs.ContainsKey($"{DestContainer}/2026-07-04-Lev-16.md"));
+
+        using var teachDoc = PdfDocument.Open(
+            store.Blobs[$"{SourceContainer}/2026-07-04-Lev-16-teaching.pdf"]);
+        Assert.Equal(1, teachDoc.NumberOfPages);
+        Assert.Contains("Jude 6 teaching text", teachDoc.GetPage(1).Text);
+    }
+
+    [Fact]
+    public async Task RunAsync_BlobMode_TeachingOnly_SkipExisting_DoesNotReupload()
+    {
+        var store = new InMemoryBlobStore();
+        await store.EnsureContainerExistsAsync(SourceContainer);
+        store.Seed(SourceContainer, PdfName, CreateAgendaPdf());
+        var stubTeaching = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x73, 0x74, 0x75, 0x62 };
+        store.Seed(SourceContainer, "2026-07-04-Lev-16-teaching.pdf", stubTeaching);
+
+        var pipeline = CreatePipeline(store);
+        var result = await pipeline.RunAsync(new ParseRequest(
+            SourceName: PdfName,
+            BlobMode: true,
+            TeachingOnly: true,
+            SkipIfDestinationExists: true,
+            RequireStandardBlobName: true));
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(stubTeaching, store.Blobs[$"{SourceContainer}/2026-07-04-Lev-16-teaching.pdf"]);
+        Assert.False(store.Blobs.ContainsKey($"{DestContainer}/2026-07-04-Lev-16.md"));
+    }
+
+    [Fact]
     public async Task RunAsync_BlobMode_MissingSource_ReturnsSourceNotFound()
     {
         var store = new InMemoryBlobStore();

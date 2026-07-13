@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+
+    "Blob": "<same-storage-connection-string-as-CLI>",
+    "Blob__ConnectionString": "<same-storage-connection-string-as-CLI>",
+    "Blob__ServiceUri": "https://livingmessiahstorage.blob.core.windows.net",
+    "Blob__SourceContainer": "shabbat-service",
+    "Blob__DestinationContainer": "shabbat-service-md",
+    "Blob__UseDefaultAzureCredential": "false",
+
+    "Parse__Overwrite": "true",
+    "Parse__RequireStandardBlobName": "true"
+  }
+}

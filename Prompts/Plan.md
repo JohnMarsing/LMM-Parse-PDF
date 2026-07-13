@@ -33,7 +33,7 @@ v1 CLI through Azure blob → Markdown is **done** (design PRs 1–5). See `READ
 | Markdown builder | Done |
 | CLI local mode | Done |
 | Azure blob I/O (`--blob` → `.md`) | Done |
-| Optional Azure Function | Not yet (PR 7) |
+| **Azure Function blob trigger (PR 7)** | **Done** (thin host; skips *-teaching.pdf) |
 | **Teaching-only PDF (workflow step 1 / PR 8a)** | **Done** (slice + local/blob write) |
 | Markdown from teaching PDF (PR 8b) | Next |
 

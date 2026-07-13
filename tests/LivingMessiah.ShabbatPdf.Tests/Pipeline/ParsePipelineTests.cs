@@ -62,6 +62,47 @@ public class ParsePipelineTests
     }
 
     [Fact]
+    public async Task RunAsync_LocalPdf_TeachingOnly_WritesTeaching_NotMarkdown()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"lmm-pipe-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var pdfPath = Path.Combine(dir, "2026-07-04-Lev-16.pdf");
+        var mdPath = Path.Combine(dir, "2026-07-04-Lev-16.md");
+        var teachingPath = Path.Combine(dir, "2026-07-04-Lev-16-teaching.pdf");
+
+        try
+        {
+            File.WriteAllBytes(pdfPath, CreateAgendaPdf());
+
+            var pipeline = CreatePipeline();
+            var result = await pipeline.RunAsync(new ParseRequest(
+                SourceName: "2026-07-04-Lev-16.pdf",
+                LocalInputPath: pdfPath,
+                LocalOutputPath: mdPath,
+                TeachingOnly: true,
+                RequireStandardBlobName: false));
+
+            Assert.True(result.Success, result.Message);
+            Assert.Null(result.Markdown);
+            Assert.Null(result.DestinationUri);
+            Assert.True(File.Exists(teachingPath));
+            Assert.False(File.Exists(mdPath));
+            Assert.Equal(teachingPath, result.TeachingPdfUri);
+
+            using var teachDoc = PdfDocument.Open(teachingPath);
+            Assert.Equal(1, teachDoc.NumberOfPages);
+            Assert.Contains("Jude 6 teaching text", teachDoc.GetPage(1).Text);
+        }
+        finally
+        {
+            TryDelete(pdfPath);
+            TryDelete(mdPath);
+            TryDelete(teachingPath);
+            try { Directory.Delete(dir); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
     public async Task RunAsync_LocalPdf_SkipExisting_SkipsTeachingWhenPresent()
     {
         var dir = Path.Combine(Path.GetTempPath(), $"lmm-pipe-{Guid.NewGuid():N}");

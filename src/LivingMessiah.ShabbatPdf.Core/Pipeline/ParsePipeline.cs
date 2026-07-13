@@ -95,14 +95,42 @@ public sealed class ParsePipeline : IParsePipeline
             var localOutputPath = ResolveLocalOutputPath(request, nameMeta);
             var localTeachingPath = ResolveLocalTeachingPdfPath(request, nameMeta, localOutputPath);
             var destUriPreview = blobMode && _blobStore is not null
-                ? _blobStore.GetBlobUri(_blobOptions.DestinationContainer, mdBlobName)
-                : localOutputPath;
+                ? (request.TeachingOnly
+                    ? _blobStore.GetBlobUri(_blobOptions.SourceContainer, teachingBlobName)
+                    : _blobStore.GetBlobUri(_blobOptions.DestinationContainer, mdBlobName))
+                : (request.TeachingOnly ? localTeachingPath : localOutputPath);
 
-            // Skip-if-exists for Markdown destination (full early exit — same as before).
-            // Teaching PDF skip is handled later per-artifact so MD can still run.
+            // Skip-if-exists early exit:
+            // - TeachingOnly: skip when teaching PDF already exists
+            // - Full run: skip when Markdown destination already exists
+            //   (teaching skip for full runs is still handled later per-artifact)
             if (request.SkipIfDestinationExists)
             {
-                if (blobMode && _blobStore is not null)
+                if (request.TeachingOnly)
+                {
+                    if (blobMode && _blobStore is not null)
+                    {
+                        if (await _blobStore.ExistsAsync(
+                                _blobOptions.SourceContainer, teachingBlobName, ct).ConfigureAwait(false))
+                        {
+                            var uri = _blobStore.GetBlobUri(_blobOptions.SourceContainer, teachingBlobName);
+                            _logger.LogInformation("Skip existing teaching blob: {Uri}", uri);
+                            return new ParseResult(
+                                true,
+                                "Skipped: teaching PDF already exists.",
+                                TeachingPdfUri: uri);
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(localTeachingPath) && File.Exists(localTeachingPath))
+                    {
+                        _logger.LogInformation("Skip existing teaching PDF: {Path}", localTeachingPath);
+                        return new ParseResult(
+                            true,
+                            "Skipped: teaching PDF already exists.",
+                            TeachingPdfUri: localTeachingPath);
+                    }
+                }
+                else if (blobMode && _blobStore is not null)
                 {
                     if (await _blobStore.ExistsAsync(
                             _blobOptions.DestinationContainer, mdBlobName, ct).ConfigureAwait(false))
@@ -119,7 +147,10 @@ public sealed class ParsePipeline : IParsePipeline
                 }
             }
 
-            if (blobMode && request.EnsureDestinationContainer && _blobStore is not null)
+            if (blobMode
+                && request.EnsureDestinationContainer
+                && !request.TeachingOnly
+                && _blobStore is not null)
             {
                 _logger.LogInformation(
                     "Ensuring destination container exists: {Container}",
@@ -195,27 +226,31 @@ public sealed class ParsePipeline : IParsePipeline
                 string.Join(',', anchors.IntroSkippedPages),
                 anchors.EndMatchMethod);
 
-            var slice = ContentSlicer.Slice(pages, anchors);
-            var markdown = _markdownBuilder.Build(slice, sourceName);
-
             if (request.DryRun)
             {
+                string? dryMarkdown = null;
+                if (!request.TeachingOnly)
+                {
+                    var drySlice = ContentSlicer.Slice(pages, anchors);
+                    dryMarkdown = _markdownBuilder.Build(drySlice, sourceName);
+                }
+
                 _logger.LogInformation(
-                    "Dry-run OK pages={Start}-{End} chars={Chars}",
+                    "Dry-run OK pages={Start}-{End} teachingOnly={TeachingOnly} chars={Chars}",
                     anchors.ContentStartPage,
                     anchors.ContentEndPage,
-                    markdown.Length);
+                    request.TeachingOnly,
+                    dryMarkdown?.Length ?? 0);
 
                 return new ParseResult(
                     Success: true,
                     Message: "Dry-run succeeded.",
-                    Markdown: markdown,
+                    Markdown: dryMarkdown,
                     Anchors: anchors,
                     DestinationUri: destUriPreview);
             }
 
             // --- Teaching PDF (page-range slice) ---
-            string? teachingPdfUri = null;
             var teachingExport = await TryExportTeachingPdfAsync(
                     request,
                     extractPath,
@@ -231,7 +266,30 @@ public sealed class ParsePipeline : IParsePipeline
                 return Fail(teachingExport.ErrorCode!, teachingExport.ErrorMessage!);
             }
 
-            teachingPdfUri = teachingExport.Uri;
+            var teachingPdfUri = teachingExport.Uri;
+
+            if (request.TeachingOnly)
+            {
+                _logger.LogInformation(
+                    "OK teaching-only {Source} pages={Start}-{End} anchors={AStart}/{AEnd} introSkip={Intro} end={Method} teaching={Teaching}",
+                    sourceName,
+                    anchors.ContentStartPage,
+                    anchors.ContentEndPage,
+                    anchors.StartAnchorPage,
+                    anchors.EndAnchorPage,
+                    string.Join(',', anchors.IntroSkippedPages),
+                    anchors.EndMatchMethod,
+                    teachingPdfUri ?? "(none)");
+
+                return new ParseResult(
+                    Success: true,
+                    Message: "OK (teaching-only)",
+                    Anchors: anchors,
+                    TeachingPdfUri: teachingPdfUri);
+            }
+
+            var slice = ContentSlicer.Slice(pages, anchors);
+            var markdown = _markdownBuilder.Build(slice, sourceName);
 
             string? destinationUri = null;
 

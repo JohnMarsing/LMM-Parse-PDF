@@ -15,4 +15,8 @@ public sealed record ParseRequest(
     /// <summary>When true, download PDF from source container and upload MD to destination container.</summary>
     bool BlobMode = false,
     /// <summary>Create destination container if missing (requires create permission).</summary>
-    bool EnsureDestinationContainer = false);
+    bool EnsureDestinationContainer = false,
+    /// <summary>
+    /// When true, only export the teaching-only PDF (page slice). Skip Markdown build and write/upload.
+    /// </summary>
+    bool TeachingOnly = false);
