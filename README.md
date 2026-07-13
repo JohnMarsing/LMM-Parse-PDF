@@ -19,8 +19,8 @@ Parses Living Messiah Shabbat service agenda PDFs and saves the teaching block a
 | CLI local mode | Done |
 | **Azure blob I/O** | **Done** (`--blob`, temp download, MD upload) |
 | **Teaching PDF slice** | **Done** (`*-teaching.pdf` next to `.md` / in `shabbat-service`) |
-| **Azure Function blob trigger** | **Done** (optional; Flex/Premium recommended for large PDFs) |
-| Markdown from teaching PDF | Not yet (PR 8b) |
+| **Azure Function Event Grid** | **Done** (Flex; `ProcessShabbatPdf`) |
+| **Markdown from teaching PDF** | **Done** (step 2 uses teaching PDF pages 1…N; `--from-teaching` optional) |
 
 See [docs/design-lmm-parse-pdf.md](docs/design-lmm-parse-pdf.md) for the full design.
 
@@ -97,12 +97,12 @@ dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- `
 
 Logs go under `out\batch-blob-parse-*.log`. See the script header for more parameters.
 
-Downloads the PDF to a **temp file** (handles large agendas), extracts, then:
+Downloads the PDF to a **temp file** (handles large agendas), then:
 
-1. Uploads a **teaching-only PDF** (content page range) to the **source** container:  
-   `https://livingmessiahstorage.blob.core.windows.net/shabbat-service/2026-07-04-Lev-16-teaching.pdf`
-2. Uploads Markdown to the **destination** container:  
-   `https://livingmessiahstorage.blob.core.windows.net/shabbat-service-md/2026-07-04-Lev-16.md`  
+1. **Step 1:** Anchors on the full agenda → upload **teaching-only PDF** to the **source** container:  
+   `…/shabbat-service/2026-07-04-Lev-16-teaching.pdf`
+2. **Step 2:** Extract text from that **teaching PDF** (pages 1…N) → upload Markdown to the **destination** container:  
+   `…/shabbat-service-md/2026-07-04-Lev-16.md`  
    with content-type `text/markdown; charset=utf-8`.
 
 Local mode also writes `*-teaching.pdf` in the same folder as the `.md`.
@@ -119,6 +119,7 @@ Local mode also writes `*-teaching.pdf` in the same folder as the `.md`.
 | `--ensure-container` | Create `shabbat-service-md` if missing |
 | `--allow-nonstandard-name` | Allow non `YYYY-MM-DD-…` names in blob mode |
 | `--teaching-only` | Export `*-teaching.pdf` only; do not build or write Markdown |
+| `--from-teaching` | Input is already `*-teaching.pdf`; Markdown only (no anchors/slice) |
 
 Exactly one of `--input` or `--blob` is required.
 
@@ -153,9 +154,9 @@ Thin isolated worker that runs when a full agenda PDF is uploaded to `shabbat-se
 | | |
 |---|---|
 | Project | `src/LivingMessiah.ShabbatPdf.Functions` |
-| Trigger | Blob create/update on `%Blob__SourceContainer%/{name}` |
+| Trigger | Event Grid `BlobCreated` on `shabbat-service` → `ProcessShabbatPdf` |
 | Skips | Non-PDF and `*-teaching.pdf` (avoids re-entry when teaching is written back) |
-| Work | Copy trigger stream → temp file (no re-download) → same `ParsePipeline` as CLI |
+| Work | Event Grid → download agenda → slice teaching PDF → Markdown from teaching PDF |
 | Outputs | `*-teaching.pdf` in source container + `*.md` in `shabbat-service-md` |
 
 ### Local settings

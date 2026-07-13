@@ -40,9 +40,12 @@ public class ParsePipelineTests
             Assert.Equal(3, result.Anchors.ContentStartPage); // skip intro page 2
             Assert.Equal(3, result.Anchors.ContentEndPage);
             Assert.Contains("source_pdf: 2026-07-04-Lev-16.pdf", result.Markdown);
-            Assert.Contains("<!-- page 3 -->", result.Markdown);
+            // MD is built from teaching PDF pages (renumbered 1…N), not full-agenda page numbers.
+            Assert.Contains("<!-- page 1 -->", result.Markdown);
+            Assert.Contains("extracted_pages: 1", result.Markdown);
             Assert.Contains("Jude 6 teaching text", result.Markdown);
             Assert.DoesNotContain("Fair Use", result.Markdown, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("<!-- page 3 -->", result.Markdown);
 
             // Teaching PDF next to .md (content page only)
             Assert.True(File.Exists(teachingPath), "Expected teaching PDF next to Markdown.");
@@ -114,8 +117,8 @@ public class ParsePipelineTests
         try
         {
             File.WriteAllBytes(pdfPath, CreateAgendaPdf());
-            // MD missing so pipeline does not early-exit; teaching already present
-            File.WriteAllBytes(teachingPath, [0x25, 0x50, 0x44, 0x46]); // "%PDF" stub
+            // MD missing so pipeline does not early-exit; teaching already present (real PDF for MD step 2)
+            File.WriteAllBytes(teachingPath, CreateTeachingOnlyPdf("existing teaching only"));
             var originalTeaching = await File.ReadAllBytesAsync(teachingPath);
 
             var pipeline = CreatePipeline();
@@ -130,6 +133,9 @@ public class ParsePipelineTests
             Assert.True(File.Exists(mdPath));
             Assert.Equal(originalTeaching, await File.ReadAllBytesAsync(teachingPath));
             Assert.Equal(teachingPath, result.TeachingPdfUri);
+            // Markdown must come from the existing teaching PDF, not a re-slice of the full agenda.
+            Assert.Contains("existing teaching only", result.Markdown);
+            Assert.DoesNotContain("Jude 6 teaching text", result.Markdown);
         }
         finally
         {
@@ -144,6 +150,42 @@ public class ParsePipelineTests
             {
                 // ignore
             }
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_FromTeaching_BuildsMarkdownWithoutAnchors()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"lmm-pipe-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var teachingPath = Path.Combine(dir, "2026-07-04-Lev-16-teaching.pdf");
+        var mdPath = Path.Combine(dir, "2026-07-04-Lev-16.md");
+
+        try
+        {
+            File.WriteAllBytes(teachingPath, CreateTeachingOnlyPdf("from teaching body"));
+
+            var pipeline = CreatePipeline();
+            var result = await pipeline.RunAsync(new ParseRequest(
+                SourceName: "2026-07-04-Lev-16-teaching.pdf",
+                LocalInputPath: teachingPath,
+                LocalOutputPath: mdPath,
+                FromTeaching: true,
+                RequireStandardBlobName: false));
+
+            Assert.True(result.Success, result.Message);
+            Assert.Null(result.Anchors);
+            Assert.True(File.Exists(mdPath));
+            Assert.Contains("source_pdf: 2026-07-04-Lev-16.pdf", result.Markdown);
+            Assert.Contains("<!-- page 1 -->", result.Markdown);
+            Assert.Contains("from teaching body", result.Markdown);
+            Assert.DoesNotContain("Fair Use", result.Markdown, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TryDelete(teachingPath);
+            TryDelete(mdPath);
+            try { Directory.Delete(dir); } catch { /* ignore */ }
         }
     }
 
@@ -255,6 +297,16 @@ public class ParsePipelineTests
         var p4 = builder.AddPage(612, 792);
         p4.AddText("The Avinu Prayer", 24, new PdfPoint(72, 700), font);
 
+        return builder.Build();
+    }
+
+    /// <summary>Single-page teaching-only PDF (step 1 output / --from-teaching input).</summary>
+    private static byte[] CreateTeachingOnlyPdf(string bodyLine)
+    {
+        var builder = new PdfDocumentBuilder();
+        var font = builder.AddStandard14Font(Standard14Font.Helvetica);
+        var page = builder.AddPage(612, 792);
+        page.AddText(bodyLine, 14, new PdfPoint(72, 700), font);
         return builder.Build();
     }
 

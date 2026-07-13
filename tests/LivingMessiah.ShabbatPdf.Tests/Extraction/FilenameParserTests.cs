@@ -43,4 +43,19 @@ public class FilenameParserTests
         Assert.True(result.IsStandardPattern);
         Assert.Equal("Lev-16", result.Citation);
     }
+
+    [Fact]
+    public void Parse_TeachingSuffix_StripsForAgendaMetadata()
+    {
+        var result = FilenameParser.Parse("2026-07-04-Lev-16-teaching.pdf");
+
+        Assert.True(result.IsStandardPattern);
+        Assert.Equal("2026-07-04", result.ServiceDate);
+        Assert.Equal("Lev-16", result.Citation);
+        Assert.Equal("2026-07-04-Lev-16.pdf", result.SourceFileName);
+        Assert.Equal("2026-07-04-Lev-16.md", result.MarkdownFileName);
+        Assert.Equal("2026-07-04-Lev-16-teaching.pdf", result.TeachingPdfFileName);
+        Assert.True(FilenameParser.IsTeachingPdfName("2026-07-04-Lev-16-teaching.pdf"));
+        Assert.False(FilenameParser.IsTeachingPdfName("2026-07-04-Lev-16.pdf"));
+    }
 }

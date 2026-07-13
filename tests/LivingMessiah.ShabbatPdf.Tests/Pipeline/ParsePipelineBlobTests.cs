@@ -58,8 +58,8 @@ public class ParsePipelineBlobTests
         await store.EnsureContainerExistsAsync(SourceContainer);
         await store.EnsureContainerExistsAsync(DestContainer);
         store.Seed(SourceContainer, PdfName, CreateAgendaPdf());
-        var stubTeaching = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x73, 0x74, 0x75, 0x62 };
-        store.Seed(SourceContainer, "2026-07-04-Lev-16-teaching.pdf", stubTeaching);
+        var existingTeaching = CreateTeachingOnlyPdf("blob existing teaching");
+        store.Seed(SourceContainer, "2026-07-04-Lev-16-teaching.pdf", existingTeaching);
 
         var pipeline = CreatePipeline(store);
         var result = await pipeline.RunAsync(new ParseRequest(
@@ -70,8 +70,43 @@ public class ParsePipelineBlobTests
 
         Assert.True(result.Success, result.Message);
         Assert.True(store.Blobs.ContainsKey($"{DestContainer}/2026-07-04-Lev-16.md"));
-        Assert.Equal(stubTeaching, store.Blobs[$"{SourceContainer}/2026-07-04-Lev-16-teaching.pdf"]);
+        Assert.Equal(existingTeaching, store.Blobs[$"{SourceContainer}/2026-07-04-Lev-16-teaching.pdf"]);
         Assert.Contains("2026-07-04-Lev-16-teaching.pdf", result.TeachingPdfUri);
+
+        var md = System.Text.Encoding.UTF8.GetString(
+            store.Blobs[$"{DestContainer}/2026-07-04-Lev-16.md"]);
+        Assert.Contains("blob existing teaching", md);
+        Assert.DoesNotContain("Jude 6 teaching text", md);
+    }
+
+    [Fact]
+    public async Task RunAsync_BlobMode_FromTeaching_UploadsMarkdownOnly()
+    {
+        var store = new InMemoryBlobStore();
+        await store.EnsureContainerExistsAsync(SourceContainer);
+        await store.EnsureContainerExistsAsync(DestContainer);
+        store.Seed(
+            SourceContainer,
+            "2026-07-04-Lev-16-teaching.pdf",
+            CreateTeachingOnlyPdf("from teaching blob body"));
+
+        var pipeline = CreatePipeline(store);
+        var result = await pipeline.RunAsync(new ParseRequest(
+            SourceName: "2026-07-04-Lev-16-teaching.pdf",
+            BlobMode: true,
+            FromTeaching: true,
+            RequireStandardBlobName: true));
+
+        Assert.True(result.Success, result.Message);
+        Assert.Null(result.Anchors);
+        Assert.Null(result.TeachingPdfUri);
+        Assert.Contains("2026-07-04-Lev-16.md", result.DestinationUri);
+
+        var md = System.Text.Encoding.UTF8.GetString(
+            store.Blobs[$"{DestContainer}/2026-07-04-Lev-16.md"]);
+        Assert.Contains("source_pdf: 2026-07-04-Lev-16.pdf", md);
+        Assert.Contains("from teaching blob body", md);
+        Assert.Contains("<!-- page 1 -->", md);
     }
 
     [Fact]
@@ -233,6 +268,15 @@ public class ParsePipelineBlobTests
         var p4 = builder.AddPage(612, 792);
         p4.AddText("The Avinu Prayer", 24, new PdfPoint(72, 700), font);
 
+        return builder.Build();
+    }
+
+    private static byte[] CreateTeachingOnlyPdf(string bodyLine)
+    {
+        var builder = new PdfDocumentBuilder();
+        var font = builder.AddStandard14Font(Standard14Font.Helvetica);
+        var page = builder.AddPage(612, 792);
+        page.AddText(bodyLine, 14, new PdfPoint(72, 700), font);
         return builder.Build();
     }
 }

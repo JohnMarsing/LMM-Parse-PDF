@@ -62,6 +62,13 @@ var teachingOnlyOption = new Option<bool>("--teaching-only")
     DefaultValueFactory = _ => false
 };
 
+var fromTeachingOption = new Option<bool>("--from-teaching")
+{
+    Description =
+        "Input is already a teaching PDF (*-teaching.pdf). Skip anchors/slice; build Markdown from every page.",
+    DefaultValueFactory = _ => false
+};
+
 var root = new RootCommand(
     "Parse Living Messiah Shabbat agenda PDFs to Markdown (local file or Azure blob).")
 {
@@ -72,7 +79,8 @@ var root = new RootCommand(
     skipExistingOption,
     ensureContainerOption,
     allowNonstandardOption,
-    teachingOnlyOption
+    teachingOnlyOption,
+    fromTeachingOption
 };
 
 root.SetAction(async (parseResult, cancellationToken) =>
@@ -85,6 +93,7 @@ root.SetAction(async (parseResult, cancellationToken) =>
     var ensureContainer = parseResult.GetValue(ensureContainerOption);
     var allowNonstandard = parseResult.GetValue(allowNonstandardOption);
     var teachingOnly = parseResult.GetValue(teachingOnlyOption);
+    var fromTeaching = parseResult.GetValue(fromTeachingOption);
 
     var blobMode = !string.IsNullOrWhiteSpace(blobName);
     var localMode = input is not null;
@@ -97,6 +106,14 @@ root.SetAction(async (parseResult, cancellationToken) =>
             "  dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- --input agenda.pdf --output agenda.md");
         Console.Error.WriteLine(
             "  dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- --blob 2026-07-04-Lev-16.pdf");
+        Console.Error.WriteLine(
+            "  dotnet run --project src/LivingMessiah.ShabbatPdf.Cli -- --input agenda-teaching.pdf --from-teaching");
+        return ExitValidation;
+    }
+
+    if (teachingOnly && fromTeaching)
+    {
+        Console.Error.WriteLine("Error: --teaching-only and --from-teaching cannot be used together.");
         return ExitValidation;
     }
 
@@ -158,7 +175,8 @@ root.SetAction(async (parseResult, cancellationToken) =>
             SkipIfDestinationExists: skipExisting,
             DryRun: dryRun,
             RequireStandardBlobName: !allowNonstandard && parseOptions.RequireStandardBlobName,
-            TeachingOnly: teachingOnly);
+            TeachingOnly: teachingOnly,
+            FromTeaching: fromTeaching);
     }
     else
     {
@@ -172,7 +190,8 @@ root.SetAction(async (parseResult, cancellationToken) =>
             DryRun: dryRun,
             RequireStandardBlobName: false,
             BlobMode: false,
-            TeachingOnly: teachingOnly);
+            TeachingOnly: teachingOnly,
+            FromTeaching: fromTeaching);
     }
 
     LivingMessiah.ShabbatPdf.Core.Models.ParseResult result;
@@ -190,14 +209,15 @@ root.SetAction(async (parseResult, cancellationToken) =>
     if (result.Success)
     {
         var anchors = result.Anchors;
+        var teaching = string.IsNullOrWhiteSpace(result.TeachingPdfUri)
+            ? ""
+            : $" teaching={result.TeachingPdfUri}";
+        var dest = result.DestinationUri
+                   ?? result.TeachingPdfUri
+                   ?? "(dry-run)";
+
         if (anchors is not null)
         {
-            var teaching = string.IsNullOrWhiteSpace(result.TeachingPdfUri)
-                ? ""
-                : $" teaching={result.TeachingPdfUri}";
-            var dest = result.DestinationUri
-                       ?? result.TeachingPdfUri
-                       ?? "(dry-run)";
             Console.WriteLine(
                 $"OK {displayName} pages={anchors.ContentStartPage}-{anchors.ContentEndPage} " +
                 $"anchors={anchors.StartAnchorPage}/{anchors.EndAnchorPage} " +
@@ -209,7 +229,8 @@ root.SetAction(async (parseResult, cancellationToken) =>
         }
         else
         {
-            Console.WriteLine($"OK {result.Message}");
+            Console.WriteLine(
+                $"OK {displayName} chars={result.Markdown?.Length ?? 0}{teaching} -> {dest}");
         }
 
         return ExitOk;

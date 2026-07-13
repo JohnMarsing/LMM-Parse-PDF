@@ -19,4 +19,10 @@ public sealed record ParseRequest(
     /// <summary>
     /// When true, only export the teaching-only PDF (page slice). Skip Markdown build and write/upload.
     /// </summary>
-    bool TeachingOnly = false);
+    bool TeachingOnly = false,
+    /// <summary>
+    /// When true, <see cref="SourceName"/> / local input is already a teaching PDF.
+    /// Skip anchors and teaching export; Markdown uses every page of that PDF.
+    /// Mutually exclusive with <see cref="TeachingOnly"/>.
+    /// </summary>
+    bool FromTeaching = false);
